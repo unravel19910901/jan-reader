@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>棚札づくり</title>
+<style>
+/* ================================================================
+   棚札づくり : 品物を選ぶと、バーコード入りの棚札を並べて印刷用に出す画面。
+   バーコードはこのページの中で描いている (外の部品は使わない)。
+   ================================================================ */
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #f4f6f0; color: #1d1c1d;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+}
+:root { --bar: #608813; }
+
+.top {
+  background: var(--bar); color: #fff; padding: 12px 16px;
+  font-size: 18px; font-weight: 800;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.top .n { font-size: 14px; font-weight: 600; opacity: .9; }
+.wrap { padding: 14px; max-width: 1100px; margin: 0 auto; }
+.panel { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+
+.search { width: 100%; font-size: 16px; padding: 12px; border: 2px solid #ddd; border-radius: 10px; }
+.tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.btn { border: 0; border-radius: 10px; padding: 12px 16px; font-size: 15px; font-weight: 700; color: #fff; background: var(--bar); }
+.btn.sub { background: #fff; color: var(--bar); border: 2px solid var(--bar); }
+.btn:disabled { opacity: .5; }
+
+.list { max-height: 46vh; overflow-y: auto; margin-top: 12px; border-top: 1px solid #eee; }
+.row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-bottom: 1px solid #f0f0f0; font-size: 15px; }
+.row input { width: 20px; height: 20px; flex: 0 0 auto; }
+.row .nm { flex: 1 1 auto; line-height: 1.35; }
+.row .jan { font-family: "Consolas", "Menlo", monospace; font-size: 12px; color: #888; }
+
+/* ---- 棚札そのもの ---- */
+#sheet { display: flex; flex-wrap: wrap; gap: 6mm; }
+.card {
+  width: 85mm; border: 1px solid #999; border-radius: 2mm; padding: 3mm;
+  background: #fff; page-break-inside: avoid; break-inside: avoid;
+}
+.card .head { display: flex; gap: 3mm; margin-bottom: 2mm; }
+.card .box { border: 1px solid #bbb; padding: 1mm 2mm; font-size: 3.6mm; min-height: 8mm; }
+.card .box.tana { width: 26mm; }
+.card .box.zan { width: 22mm; margin-left: auto; }
+.card .box .lbl { font-size: 2.6mm; color: #777; }
+.card svg { display: block; width: 100%; height: 16mm; }
+.card .code { font-family: "Consolas", "Menlo", monospace; font-size: 4.2mm; letter-spacing: .4mm; text-align: center; margin-top: .5mm; }
+.card .name { font-size: 3.6mm; line-height: 1.35; margin-top: 1.5mm; min-height: 10mm; word-break: break-all; }
+.hint { font-size: 13px; color: #888; line-height: 1.7; margin-top: 10px; }
+
+@media print {
+  .noprint { display: none !important; }
+  body { background: #fff; }
+  .wrap { padding: 0; max-width: none; }
+  .panel { box-shadow: none; padding: 0; margin: 0; }
+  #sheet { gap: 4mm; }
+  @page { margin: 10mm; }
+}
+</style>
+</head>
+<body>
+
+<div class="top noprint">
+  <span>棚札づくり</span>
+  <span class="n" id="count">0件を選択中</span>
+</div>
+
+<div class="wrap">
+
+  <div class="panel noprint">
+    <input class="search" id="q" type="text" placeholder="品名やJANで探す（例: トランスポア / 4987）" />
+    <div class="tools">
+      <button class="btn sub" type="button" id="allBtn">表示中を全部選ぶ</button>
+      <button class="btn sub" type="button" id="noneBtn">選択を解除</button>
+      <button class="btn" type="button" id="printBtn" disabled>選んだものを印刷</button>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="hint">
+      チェックした品物ぶんの棚札を、下に並べて出します。そのまま印刷してください。<br />
+      棚番号と「残」の欄は空にしてあります。手書きで入れる想定です。<br />
+      バーコードはこのページの中で描いているので、ネットにつながっていなくても出ます。
+    </div>
+  </div>
+
+  <div class="panel">
+    <div id="sheet"></div>
+  </div>
+
+</div>
+
+<script src="items.js"></script>
+<script>
+  // ================================================================
+  // EAN-13(JAN)のバーコードを描く。
+  // 13桁は「左端の印 → 左6桁 → 真ん中の印 → 右6桁 → 右端の印」で、
+  // 先頭の1桁は棒そのものにはならず、左6桁の「並べ方」で表される。
+  // ================================================================
+  const L = ["0001101","0011001","0010011","0111101","0100011","0110001","0101111","0111011","0110111","0001011"];
+  const G = ["0100111","0110011","0011011","0100001","0011101","0111001","0000101","0010001","0001001","0010111"];
+  const R = ["1110010","1100110","1101100","1000010","1011100","1001110","1010000","1000100","1001000","1110100"];
+  const PARITY = ["LLLLLL","LLGLGG","LLGGLG","LLGGGL","LGLLGG","LGGLLG","LGGGLL","LGLGLG","LGLGGL","LGGLGL"];
+
+  function ean13Bits(code) {
+    const d = String(code).split("").map(Number);
+    const par = PARITY[d[0]];
+    let bits = "101";
+    for (let i = 1; i <= 6; i++) bits += (par[i - 1] === "L" ? L : G)[d[i]];
+    bits += "01010";
+    for (let i = 7; i <= 12; i++) bits += R[d[i]];
+    bits += "101";
+    return bits;
+  }
+  // 端の印と真ん中の印は、下へ少し長く伸ばすのが決まり。読み取り機が端を見つけやすい。
+  function ean13Svg(code) {
+    const bits = ean13Bits(code);
+    const W = bits.length;          // 95
+    const H = 40, LONG = 45;
+    const isGuard = (i) => (i < 3) || (i >= 45 && i < 50) || (i >= W - 3);
+    let rects = "";
+    for (let i = 0; i < W; i++) {
+      if (bits[i] !== "1") continue;
+      rects += `<rect x="${i}" y="0" width="1" height="${isGuard(i) ? LONG : H}" fill="#000"/>`;
+    }
+    return `<svg viewBox="0 -2 ${W} ${LONG + 2}" preserveAspectRatio="none">${rects}</svg>`;
+  }
+  function janOk(code) {
+    if (!/^\d{13}$/.test(code)) return false;
+    let s = 0;
+    for (let i = 0; i < 12; i++) s += Number(code[i]) * (i % 2 === 0 ? 1 : 3);
+    return (10 - (s % 10)) % 10 === Number(code[12]);
+  }
+
+  const ITEMS = window.JAN_ITEMS || {};
+  const entries = Object.entries(ITEMS);
+  const picked = new Set();
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const $ = (id) => document.getElementById(id);
+
+  function shown() {
+    const q = $("q").value.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter(([j, n]) => j.includes(q) || n.toLowerCase().includes(q));
+  }
+  function renderList() {
+    const rows = shown();
+    $("list").innerHTML = rows.map(([j, n]) => `
+      <label class="row">
+        <input type="checkbox" data-jan="${j}" ${picked.has(j) ? "checked" : ""} />
+        <span class="nm">${esc(n)}<br /><span class="jan">${j}${janOk(j) ? "" : "（JANではない番号）"}</span></span>
+      </label>`).join("");
+    $("count").textContent = `${picked.size}件を選択中（${rows.length}件を表示）`;
+    $("printBtn").disabled = picked.size === 0;
+  }
+  function renderSheet() {
+    const list = entries.filter(([j]) => picked.has(j));
+    $("sheet").innerHTML = list.map(([j, n]) => `
+      <div class="card">
+        <div class="head">
+          <div class="box tana"><div class="lbl">棚番号</div></div>
+          <div class="box zan"><div class="lbl">残</div></div>
+        </div>
+        ${janOk(j) ? ean13Svg(j) : '<div style="height:16mm;display:flex;align-items:center;justify-content:center;color:#c0392b;font-size:3.4mm">この番号はバーコードにできません（社内コード）</div>'}
+        <div class="code">${j}</div>
+        <div class="name">${esc(n)}</div>
+      </div>`).join("");
+  }
+
+  $("q").addEventListener("input", renderList);
+  $("list").addEventListener("change", (e) => {
+    const cb = e.target.closest("input[type=checkbox]");
+    if (!cb) return;
+    if (cb.checked) picked.add(cb.dataset.jan); else picked.delete(cb.dataset.jan);
+    renderList(); renderSheet();
+  });
+  $("allBtn").addEventListener("click", () => { shown().forEach(([j]) => picked.add(j)); renderList(); renderSheet(); });
+  $("noneBtn").addEventListener("click", () => { picked.clear(); renderList(); renderSheet(); });
+  $("printBtn").addEventListener("click", () => window.print());
+
+  renderList();
+</script>
+</body>
+</html>
