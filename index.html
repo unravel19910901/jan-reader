@@ -94,9 +94,24 @@ body {
 table { width: 100%; border-collapse: collapse; font-size: 16px; }
 th, td { padding: 10px 6px; border-bottom: 1px solid #eee; text-align: left; }
 th { font-size: 13px; color: #777; font-weight: 600; }
-td.code { font-family: "Consolas", "Menlo", monospace; letter-spacing: 0.04em; }
-td.del { width: 46px; text-align: right; }
-.del-btn { border: 0; background: none; color: var(--ng); font-size: 20px; padding: 4px 8px; }
+td.del { width: 40px; text-align: right; }
+.del-btn { border: 0; background: none; color: var(--ng); font-size: 20px; padding: 4px 6px; }
+/* 物品名。登録が無いJANは、押すと名前を入れられる */
+.nm { font-size: 16px; font-weight: 700; line-height: 1.35; }
+.nm.none { color: #b06000; font-weight: 600; text-decoration: underline dotted; }
+.jan { font-family: "Consolas", "Menlo", monospace; font-size: 12px; color: #888; letter-spacing: 0.04em; }
+/* 個数。指で押せる大きさにする */
+td.qty { width: 132px; text-align: center; white-space: nowrap; }
+.qbtn {
+  width: 38px; height: 38px; border: 2px solid var(--bar); background: #fff;
+  color: var(--bar); font-size: 20px; font-weight: 800; border-radius: 9px; padding: 0;
+}
+.qnum {
+  display: inline-block; min-width: 40px; font-size: 20px; font-weight: 800;
+  vertical-align: middle; padding: 0 4px;
+}
+/* 読み込んだ直後の行を一瞬光らせる (同じ物を読み足したときに分かるように) */
+tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 .empty { color: #999; font-size: 14px; padding: 14px 2px; }
 .row-actions { display: flex; gap: 8px; margin-top: 10px; }
 .row-actions .big-btn { margin-bottom: 0; }
@@ -135,7 +150,7 @@ td.del { width: 46px; text-align: right; }
       <h2>読み取ったJAN</h2>
     </div>
     <table id="table" style="display:none">
-      <thead><tr><th>JANコード</th><th>読んだ時刻</th><th></th></tr></thead>
+      <thead><tr><th>物品</th><th style="text-align:center">個数</th><th></th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     <div class="empty" id="empty">まだ読み取っていません。</div>
@@ -145,7 +160,8 @@ td.del { width: 46px; text-align: right; }
     </div>
     <div class="hint">
       読み取りはこの端末の中だけで行われ、どこにも送信されません。<br />
-      一覧はこの端末に残るので、画面を閉じても消えません。
+      一覧はこの端末に残るので、画面を閉じても消えません。<br />
+      同じ物品をもう一度読むと、個数が1つ増えます。個数は「−」「＋」か、数字を押して直接入れられます。
     </div>
   </div>
 
@@ -160,6 +176,19 @@ td.del { width: 46px; text-align: right; }
   //   ・ZXing           … 入っていない端末 (iPhone等) 用に、このページが積んでいる部品
   // どちらも端末の中で完結する。
   // ================================================================
+  // JAN → 物品名 の対応表。金曜物品の8品目 (共有の friday-teisu-schedule.json と同じ中身)。
+  // ここに無いJANは「未登録」と出て、その場で名前を入れられる。
+  const ITEMS = {
+    "4987057642239": "ダルベポエチン60ug",
+    "4987431204169": "デキサート注射液3.3mg×10管",
+    "4987925101035": "ロセフィン1g10本入り",
+    "4987035243618": "生食10mlシリンジ10本入り",
+    "4987867410561": "献血アルブミン25％",
+    "4987035186601": "ポタコールR500ml20袋",
+    "4987035175315": "生食100ml10本入り",
+    "4987035185406": "ビーフリード500ml20袋",
+  };
+
   const $ = (id) => document.getElementById(id);
   const cameraBox = $("cameraBox"), video = $("video");
   const STORE_KEY = "janReaderList";
@@ -216,24 +245,44 @@ td.del { width: 46px; text-align: right; }
 
   // ---- 一覧の出し入れ ----
   function load() {
-    try { const v = JSON.parse(localStorage.getItem(STORE_KEY) || "[]"); return Array.isArray(v) ? v : []; }
-    catch (_) { return []; }
+    try {
+      const v = JSON.parse(localStorage.getItem(STORE_KEY) || "[]");
+      if (!Array.isArray(v)) return [];
+      // 以前の版で貯めたぶん (個数も名前も無い) を、今の形に揃える
+      return v.map((it) => ({
+        jan: String(it.jan || ""),
+        name: it.name || ITEMS[it.jan] || "",
+        qty: Number(it.qty) > 0 ? Number(it.qty) : 1,
+        at: it.at || "",
+      })).filter((it) => it.jan);
+    } catch (_) { return []; }
   }
   function save() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(list)); } catch (_) {}
   }
-  function render() {
+  function render(flashJan) {
     $("count").textContent = `${list.length}件`;
     $("table").style.display = list.length ? "" : "none";
     $("empty").style.display = list.length ? "none" : "";
     $("copyBtn").disabled = !list.length;
     $("clearBtn").disabled = !list.length;
     $("tbody").innerHTML = list.map((it, i) => `
-      <tr>
-        <td class="code">${esc(it.jan)}</td>
-        <td>${esc(it.at)}</td>
+      <tr class="${it.jan === flashJan ? "flash" : ""}">
+        <td>
+          <div class="nm ${it.name ? "" : "none"}" data-name="${i}">${esc(it.name || "未登録（押して名前を入れる）")}</div>
+          <div class="jan">${esc(it.jan)}</div>
+        </td>
+        <td class="qty">
+          <button class="qbtn" type="button" data-minus="${i}">−</button>
+          <span class="qnum" data-qty="${i}">${it.qty}</span>
+          <button class="qbtn" type="button" data-plus="${i}">＋</button>
+        </td>
         <td class="del"><button class="del-btn" type="button" data-i="${i}">×</button></td>
       </tr>`).join("");
+    // 光らせたぶんは、少し経ったら元の色へ戻す
+    if (flashJan) setTimeout(() => {
+      document.querySelectorAll("tr.flash").forEach((tr) => tr.classList.remove("flash"));
+    }, 900);
   }
 
   // ---- 読めたとき ----
@@ -247,11 +296,15 @@ td.del { width: 46px; text-align: right; }
 
     const t = new Date();
     const at = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
-    list.unshift({ jan, at });
+    // 同じ物をもう一度読んだら、行を増やさずに個数を1つ足す
+    const found = list.find((it) => it.jan === jan);
+    if (found) found.qty += 1;
+    else list.unshift({ jan, name: ITEMS[jan] || "", qty: 1, at });
     save();
-    render();
+    render(jan);
 
-    $("last").innerHTML = `<div class="label">読み取りました</div><div class="code">${esc(jan)}</div>`;
+    const label = (found ? found.name : ITEMS[jan]) || "";
+    $("last").innerHTML = `<div class="label">読み取りました</div><div class="code">${esc(label || jan)}</div>`;
     setStatus("次のバーコードにかざしてください。");
     notify();
   }
@@ -363,14 +416,39 @@ td.del { width: 46px; text-align: right; }
   // ---- ボタン ----
   $("startBtn").addEventListener("click", startCamera);
   $("stopBtn").addEventListener("click", () => { stopCamera(); setStatus("カメラを閉じました。"); });
+  // 一覧の中の操作 (個数の増減・直接入力・名前入れ・削除)
   $("tbody").addEventListener("click", (e) => {
-    const b = e.target.closest(".del-btn");
-    if (!b) return;
-    list.splice(Number(b.dataset.i), 1);
-    save(); render();
+    const el = e.target.closest("[data-minus],[data-plus],[data-qty],[data-name],[data-i]");
+    if (!el) return;
+    const d = el.dataset;
+
+    if (d.plus !== undefined) { list[d.plus].qty += 1; save(); render(); return; }
+    if (d.minus !== undefined) {
+      const i = Number(d.minus);
+      list[i].qty -= 1;
+      if (list[i].qty < 1) list.splice(i, 1);   // 0まで減らしたら行ごと消える
+      save(); render(); return;
+    }
+    if (d.qty !== undefined) {
+      const i = Number(d.qty);
+      const v = prompt("個数を入れてください", String(list[i].qty));
+      if (v === null) return;
+      const n = parseInt(String(v).replace(/[^\d]/g, ""), 10);
+      if (Number.isFinite(n) && n > 0) { list[i].qty = n; save(); render(); }
+      return;
+    }
+    if (d.name !== undefined) {
+      const i = Number(d.name);
+      const v = prompt("物品名を入れてください", list[i].name || "");
+      if (v === null) return;
+      list[i].name = String(v).trim();
+      save(); render(); return;
+    }
+    if (d.i !== undefined) { list.splice(Number(d.i), 1); save(); render(); }
   });
   $("copyBtn").addEventListener("click", async () => {
-    const text = list.map((it) => it.jan).join("\n");
+    // 表に貼れるよう、JAN / 物品名 / 個数 をタブ区切りで
+    const text = list.map((it) => [it.jan, it.name || "", it.qty].join("\t")).join("\n");
     try {
       await navigator.clipboard.writeText(text);
       setStatus(`${list.length}件をコピーしました。`);
