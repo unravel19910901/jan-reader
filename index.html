@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="theme-color" content="#608813" />
+<title>JAN読み取り</title>
+<style>
+/* ================================================================
+   JAN読み取り : スマホで開いて、物品のバーコードにかざすだけの画面。
+   読み取りは端末の中だけで行う (どこにも送らない)。
+   サーバーを持たないので、GitHub Pages のような置き場でそのまま動く。
+   ================================================================ */
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+  background: #f4f6f0; color: #1d1c1d;
+  display: flex; flex-direction: column;
+}
+:root {
+  --bar: #608813;          /* OnoDの帯と同じ色 */
+  --bar-fg: #fff;
+  --ok: #2b7a2b;
+  --ng: #c0392b;
+}
+
+/* ---- 上の帯 ---- */
+.top {
+  flex: 0 0 auto; background: var(--bar); color: var(--bar-fg);
+  padding: 12px 14px; font-size: 18px; font-weight: 800;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.top .count { font-size: 14px; font-weight: 600; opacity: 0.9; }
+
+/* ---- 本体 ---- */
+.wrap { flex: 1 1 auto; overflow-y: auto; padding: 12px; }
+.panel {
+  background: #fff; border-radius: 12px; padding: 14px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12); margin-bottom: 12px;
+}
+
+/* ---- カメラ ---- */
+.camera { position: relative; background: #000; border-radius: 12px; overflow: hidden; display: none; }
+.camera.on { display: block; }
+.camera video { width: 100%; display: block; max-height: 60vh; object-fit: cover; }
+/* 読み取る位置の目安。細長い枠にすると、横長のバーコードを合わせやすい */
+.guide {
+  position: absolute; left: 8%; right: 8%; top: 50%; height: 22%;
+  transform: translateY(-50%);
+  border: 3px solid rgba(255,255,255,0.9); border-radius: 8px;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.28);
+  pointer-events: none;
+}
+
+/* ---- ボタン ---- */
+.big-btn {
+  width: 100%; border: 0; border-radius: 12px; padding: 18px 12px;
+  font-size: 19px; font-weight: 800; color: #fff; background: var(--bar);
+  margin-bottom: 10px;
+}
+.big-btn:disabled { opacity: 0.5; }
+.big-btn.stop { background: #7a7a7a; }
+.big-btn.sub { background: #fff; color: var(--bar); border: 2px solid var(--bar); }
+
+.status { font-size: 15px; line-height: 1.5; margin: 4px 2px 10px; color: #444; }
+.status.error { color: var(--ng); font-weight: 700; }
+
+/* ---- 直前に読んだもの ---- */
+.last { text-align: center; padding: 6px 0 2px; }
+.last .code {
+  font-size: 30px; font-weight: 800; letter-spacing: 0.06em;
+  font-family: "Consolas", "Menlo", monospace; color: var(--ok);
+  word-break: break-all;
+}
+.last .label { font-size: 13px; color: #777; }
+
+/* ---- 一覧 ---- */
+.list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.list-head h2 { font-size: 16px; margin: 0; }
+table { width: 100%; border-collapse: collapse; font-size: 16px; }
+th, td { padding: 10px 6px; border-bottom: 1px solid #eee; text-align: left; }
+th { font-size: 13px; color: #777; font-weight: 600; }
+td.code { font-family: "Consolas", "Menlo", monospace; letter-spacing: 0.04em; }
+td.del { width: 46px; text-align: right; }
+.del-btn { border: 0; background: none; color: var(--ng); font-size: 20px; padding: 4px 8px; }
+.empty { color: #999; font-size: 14px; padding: 14px 2px; }
+.row-actions { display: flex; gap: 8px; margin-top: 10px; }
+.row-actions .big-btn { margin-bottom: 0; }
+.hint { font-size: 13px; color: #888; line-height: 1.6; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <span>JAN読み取り</span>
+  <span class="count" id="count">0件</span>
+</div>
+
+<div class="wrap">
+
+  <div class="panel">
+    <div class="camera" id="cameraBox">
+      <video id="video" playsinline muted></video>
+      <div class="guide"></div>
+    </div>
+    <div class="last" id="last"></div>
+    <div class="status" id="status">「カメラを開く」を押して、バーコードにかざしてください。</div>
+    <button class="big-btn" id="startBtn" type="button">カメラを開く</button>
+    <button class="big-btn stop" id="stopBtn" type="button" style="display:none">カメラを閉じる</button>
+    <label class="big-btn sub" for="photo" style="display:block; text-align:center;">写真から読む</label>
+    <input type="file" id="photo" accept="image/*" capture="environment" style="display:none" />
+  </div>
+
+  <div class="panel">
+    <div class="list-head">
+      <h2>読み取ったJAN</h2>
+    </div>
+    <table id="table" style="display:none">
+      <thead><tr><th>JANコード</th><th>読んだ時刻</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="empty">まだ読み取っていません。</div>
+    <div class="row-actions">
+      <button class="big-btn sub" id="copyBtn" type="button" disabled>まとめてコピー</button>
+      <button class="big-btn stop" id="clearBtn" type="button" disabled>全部消す</button>
+    </div>
+    <div class="hint">
+      読み取りはこの端末の中だけで行われ、どこにも送信されません。<br />
+      一覧はこの端末に残るので、画面を閉じても消えません。
+    </div>
+  </div>
+
+</div>
+
+<canvas id="canvas" style="display:none"></canvas>
+
+<script src="vendor/zxing.min.js"></script>
+<script>
+  // ================================================================
+  // 読み取りの仕組みは2通り。端末によって使える方が自動で選ばれる。
+  //   ・BarcodeDetector … Android の Chrome に最初から入っている読み取り
+  //   ・ZXing           … 入っていない端末 (iPhone等) 用に、このページが積んでいる部品
+  // どちらも端末の中で完結する。
+  // ================================================================
+  const $ = (id) => document.getElementById(id);
+  const cameraBox = $("cameraBox"), video = $("video"), canvas = $("canvas");
+  const STORE_KEY = "janReaderList";
+
+  let detector = null;
+  let zxing = null;
+  let stream = null, timer = null;
+  let lastCode = "", lastAt = 0;   // 同じ物を連続で読まないための控え
+  let list = load();
+
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  function setStatus(text, error = false) {
+    $("status").textContent = text;
+    $("status").classList.toggle("error", !!error);
+  }
+
+  // ---- 一覧の出し入れ ----
+  function load() {
+    try { const v = JSON.parse(localStorage.getItem(STORE_KEY) || "[]"); return Array.isArray(v) ? v : []; }
+    catch (_) { return []; }
+  }
+  function save() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(list)); } catch (_) {}
+  }
+  function render() {
+    $("count").textContent = `${list.length}件`;
+    $("table").style.display = list.length ? "" : "none";
+    $("empty").style.display = list.length ? "none" : "";
+    $("copyBtn").disabled = !list.length;
+    $("clearBtn").disabled = !list.length;
+    $("tbody").innerHTML = list.map((it, i) => `
+      <tr>
+        <td class="code">${esc(it.jan)}</td>
+        <td>${esc(it.at)}</td>
+        <td class="del"><button class="del-btn" type="button" data-i="${i}">×</button></td>
+      </tr>`).join("");
+  }
+
+  // ---- 読めたとき ----
+  function hit(code) {
+    const jan = String(code || "").trim();
+    if (!jan) return;
+    const now = Date.now();
+    // 同じコードを続けて拾ってしまうのを防ぐ (かざしっぱなしでも1回だけ数える)
+    if (jan === lastCode && now - lastAt < 2500) return;
+    lastCode = jan; lastAt = now;
+
+    const t = new Date();
+    const at = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+    list.unshift({ jan, at });
+    save();
+    render();
+
+    $("last").innerHTML = `<div class="label">読み取りました</div><div class="code">${esc(jan)}</div>`;
+    setStatus("次のバーコードにかざしてください。");
+    notify();
+  }
+
+  // 読めた合図。音と振動で、画面を見ていなくても分かるようにする。
+  function notify() {
+    try { if (navigator.vibrate) navigator.vibrate(60); } catch (_) {}
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.frequency.value = 1180; gain.gain.value = 0.12;
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(); osc.stop(ctx.currentTime + 0.09);
+      setTimeout(() => { try { ctx.close(); } catch (_) {} }, 400);
+    } catch (_) {}
+  }
+
+  // ---- 読み取り部品の用意 ----
+  function ensureDetector() {
+    if (!("BarcodeDetector" in window)) return false;
+    if (!detector) {
+      try {
+        detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "itf"] });
+      } catch (_) { detector = new BarcodeDetector(); }
+    }
+    return true;
+  }
+  function ensureZxing() {
+    if (zxing) return zxing;
+    if (typeof ZXing === "undefined") return null;
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8,
+      ZXing.BarcodeFormat.UPC_A, ZXing.BarcodeFormat.UPC_E,
+      ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.ITF,
+    ]);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    zxing = new ZXing.BrowserMultiFormatReader(hints, 300);
+    return zxing;
+  }
+
+  // ---- カメラ ----
+  async function startCamera() {
+    stopCamera();
+    cameraBox.classList.add("on");
+    $("startBtn").style.display = "none";
+    $("stopBtn").style.display = "";
+    try {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+      } catch (_) {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+      setStatus("バーコードを枠に入れてください。読めたら音が鳴ります。");
+
+      if (ensureDetector()) {
+        video.srcObject = stream;
+        await video.play();
+        timer = setInterval(scanFrame, 350);
+        scanFrame();
+      } else {
+        // iPhoneなど。読めるたびに呼ばれるので、カメラは開けたままにする。
+        const reader = ensureZxing();
+        if (!reader) throw new Error("読み取り部品を読み込めませんでした");
+        reader.decodeFromStream(stream, video, (result) => { if (result) hit(result.getText()); });
+      }
+    } catch (e) {
+      stopCamera();
+      const name = (e && e.name) || e;
+      if (String(name).includes("NotAllowed")) {
+        setStatus("カメラの使用が許可されていません。ブラウザの許可を出してから、もう一度お試しください。", true);
+      } else {
+        setStatus(`カメラを開けませんでした（${name}）。「写真から読む」でも読み取れます。`, true);
+      }
+    }
+  }
+
+  function stopCamera() {
+    if (timer) clearInterval(timer);
+    timer = null;
+    if (zxing) { try { zxing.reset(); } catch (_) {} }
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    video.srcObject = null;
+    cameraBox.classList.remove("on");
+    $("startBtn").style.display = "";
+    $("stopBtn").style.display = "none";
+  }
+
+  async function scanFrame() {
+    if (video.readyState < 2 || !detector) return;
+    try {
+      const codes = await detector.detect(video);
+      if (codes && codes[0] && codes[0].rawValue) hit(codes[0].rawValue);
+    } catch (_) { /* 1コマ読めなくても、次のコマで拾う */ }
+  }
+
+  // ---- 写真から読む ----
+  async function readPhoto(file) {
+    if (!file) return;
+    setStatus("写真を読み取っています...");
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await loadImage(url);
+      if (ensureDetector()) {
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        canvas.getContext("2d").drawImage(img, 0, 0);
+        const codes = await detector.detect(canvas);
+        if (codes && codes[0] && codes[0].rawValue) { hit(codes[0].rawValue); return; }
+      } else {
+        const reader = ensureZxing();
+        if (reader) {
+          try {
+            const result = await reader.decodeFromImageUrl(url);
+            if (result) { hit(result.getText()); return; }
+          } catch (_) { /* 下の案内へ */ }
+        }
+      }
+      setStatus("写真からバーコードを見つけられませんでした。もう少し近くで、まっすぐ撮ってください。", true);
+    } catch (e) {
+      setStatus(`写真の読み取りに失敗しました: ${(e && e.message) || e}`, true);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  function loadImage(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("画像を開けませんでした"));
+      img.src = url;
+    });
+  }
+
+  // ---- ボタン ----
+  $("startBtn").addEventListener("click", startCamera);
+  $("stopBtn").addEventListener("click", () => { stopCamera(); setStatus("カメラを閉じました。"); });
+  $("photo").addEventListener("change", (e) => { readPhoto(e.target.files && e.target.files[0]); e.target.value = ""; });
+  $("tbody").addEventListener("click", (e) => {
+    const b = e.target.closest(".del-btn");
+    if (!b) return;
+    list.splice(Number(b.dataset.i), 1);
+    save(); render();
+  });
+  $("copyBtn").addEventListener("click", async () => {
+    const text = list.map((it) => it.jan).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus(`${list.length}件をコピーしました。`);
+    } catch (_) {
+      // 許可が下りない端末向け。選択できる状態にして、手でコピーしてもらう。
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); setStatus(`${list.length}件をコピーしました。`); }
+      catch (_) { setStatus("コピーできませんでした。長押しで選んでコピーしてください。", true); }
+      ta.remove();
+    }
+  });
+  $("clearBtn").addEventListener("click", () => {
+    if (!confirm("読み取った一覧を全部消します。よろしいですか？")) return;
+    list = []; save(); render();
+    $("last").innerHTML = "";
+    setStatus("一覧を空にしました。");
+  });
+
+  render();
+</script>
+</body>
+</html>
