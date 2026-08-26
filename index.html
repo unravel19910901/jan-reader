@@ -161,7 +161,8 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
     <div class="hint">
       読み取りはこの端末の中だけで行われ、どこにも送信されません。<br />
       一覧はこの端末に残るので、画面を閉じても消えません。<br />
-      同じ物品をもう一度読むと、個数が1つ増えます。個数は「−」「＋」か、数字を押して直接入れられます。
+      同じ物品をもう一度読むと、個数が1つ増えます。個数は「−」「＋」か、数字を押して直接入れられます。<br />
+      バーコードのほか、<b>棚札に印字された13桁の数字</b>も読めます（少しじっと構えてください）。
     </div>
   </div>
 
@@ -543,7 +544,7 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 
   let detector = null;
   let zxing = null;
-  let stream = null, timer = null;
+  let stream = null, timer = null, textTimer = null;
   let lastCode = "", lastAt = 0;   // 同じ物を連続で読まないための控え
   let list = load();
 
@@ -670,6 +671,40 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
     } catch (_) {}
   }
 
+  // ---- 棚札の数字読み (2026-08-26) ----
+  // バーコードが無い棚札のために、印字された13桁の数字も読む。
+  // 端末に入っている文字読み(TextDetector)を使うので、追加のダウンロードは無い。
+  // 読み間違いは JAN の見張り番(チェックディジット)で弾く。合わないものは捨てる。
+  let textDetector = null;   // null=未確認 / false=この端末では使えない
+  function ensureTextDetector() {
+    if (textDetector !== null) return textDetector;
+    if (!("TextDetector" in window)) { textDetector = false; return false; }
+    try { textDetector = new TextDetector(); } catch (_) { textDetector = false; }
+    return textDetector;
+  }
+  // JANの13桁目は、前の12桁から計算で決まる見張り番。合わなければ読み間違い。
+  function janCheckOk(code) {
+    if (!/^\d{13}$/.test(code)) return false;
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += Number(code[i]) * (i % 2 === 0 ? 1 : 3);
+    return (10 - (sum % 10)) % 10 === Number(code[12]);
+  }
+  async function scanText() {
+    const d = ensureTextDetector();
+    if (!d || video.readyState < 2) return;
+    let blocks;
+    try { blocks = await d.detect(video); } catch (_) { return; }
+    // 読めた文字から数字だけ取り出し、13桁の並びを片端から確かめる。
+    // 「0520201 トランスポア…」のような別の番号は、見張り番が合わないので落ちる。
+    const digits = (blocks || []).map((b) => String(b.rawValue || "")).join(" ").replace(/[^\d]/g, " ");
+    for (const run of digits.split(/\s+/)) {
+      for (let i = 0; i + 13 <= run.length; i++) {
+        const cand = run.slice(i, i + 13);
+        if (janCheckOk(cand)) { hit(cand); return; }
+      }
+    }
+  }
+
   // ---- 読み取り部品の用意 ----
   function ensureDetector() {
     if (!("BarcodeDetector" in window)) return false;
@@ -713,7 +748,10 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
       } catch (_) {
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       }
-      setStatus("バーコードを枠に入れてください。読めたら音が鳴ります。");
+      const cardOk = !!ensureTextDetector();
+      setStatus(cardOk
+        ? "バーコード、または棚札の13桁の数字を枠に入れてください。読めたら音が鳴ります。"
+        : "バーコードを枠に入れてください。読めたら音が鳴ります。（この端末では棚札の数字読みは使えません）");
 
       if (ensureDetector()) {
         video.srcObject = stream;
@@ -726,6 +764,8 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
         if (!reader) throw new Error("読み取り部品を読み込めませんでした");
         reader.decodeFromStream(stream, video, (result) => { if (result) hit(result.getText()); });
       }
+      // 棚札の数字読みは重いので、バーコードより間隔を空けて回す
+      if (cardOk) { textTimer = setInterval(scanText, 800); }
     } catch (e) {
       stopCamera();
       const name = String((e && e.name) || e);
@@ -743,6 +783,8 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
   function stopCamera() {
     if (timer) clearInterval(timer);
     timer = null;
+    if (textTimer) clearInterval(textTimer);
+    textTimer = null;
     if (zxing) { try { zxing.reset(); } catch (_) {} }
     if (stream) stream.getTracks().forEach((t) => t.stop());
     stream = null;
