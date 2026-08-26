@@ -113,7 +113,6 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 .empty { color: #999; font-size: 14px; padding: 14px 2px; }
 .row-actions { display: flex; gap: 8px; margin-top: 10px; }
 .row-actions .big-btn { margin-bottom: 0; }
-.hint { font-size: 13px; color: #888; line-height: 1.6; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -151,12 +150,7 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
     <div class="empty" id="empty">まだ読み取っていません。</div>
     <div class="row-actions">
       <button class="big-btn sub" id="copyBtn" type="button" disabled>発注</button>
-      <button class="big-btn stop" id="clearBtn" type="button" disabled>全部消す</button>
-    </div>
-    <div class="hint">
-      読み取りはこの端末の中だけで行われ、どこにも送信されません。<br />
-      一覧はこの端末に残るので、画面を閉じても消えません。<br />
-      同じ物品をもう一度読むと、個数が1つ増えます。個数は「−」「＋」か、数字を押して直接入れられます。<br />
+      <button class="big-btn stop" id="clearBtn" type="button" disabled>取消</button>
     </div>
   </div>
 
