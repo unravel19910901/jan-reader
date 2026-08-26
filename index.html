@@ -102,23 +102,18 @@ body::before {
 table { width: 100%; border-collapse: collapse; font-size: 16px; }
 th, td { padding: 10px 6px; border-bottom: 1px solid #eee; text-align: left; }
 th { font-size: 13px; color: #777; font-weight: 600; }
-td.del { width: 40px; text-align: right; }
-.del-btn { border: 0; background: none; color: var(--ng); font-size: 20px; padding: 4px 6px; }
 /* 物品名。登録が無いJANは、押すと名前を入れられる */
 .nm { font-size: 16px; font-weight: 700; line-height: 1.35; }
 .nm.none { color: #b06000; font-weight: 600; text-decoration: underline dotted; }
 .jan { font-family: "Consolas", "Menlo", monospace; font-size: 12px; color: #888; letter-spacing: 0.04em; }
-/* 個数。指で押せる大きさにする */
-td.qty { width: 132px; text-align: center; white-space: nowrap; padding-right: 26px; }
-.qbtn {
-  width: 38px; height: 38px; border: 2px solid var(--bar); background: #fff;
-  color: var(--bar); font-size: 20px; font-weight: 800; border-radius: 9px; padding: 0;
-}
+/* 個数。行の右半分を押すと増え、左半分を押すと減る */
+td.qty { width: 64px; text-align: right; white-space: nowrap; }
 .qnum {
-  display: inline-block; min-width: 40px; font-size: 20px; font-weight: 800;
-  vertical-align: middle; padding: 0 4px;
+  display: inline-block; min-width: 34px; font-size: 24px; font-weight: 800;
+  vertical-align: middle; padding: 0 2px;
 }
 /* 読み込んだ直後の行を一瞬光らせる (同じ物を読み足したときに分かるように) */
+tbody tr { cursor: pointer; }
 tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 .empty { color: #999; font-size: 14px; padding: 14px 2px; }
 .row-actions { display: flex; gap: 8px; margin-top: 10px; }
@@ -154,7 +149,7 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 
   <div class="panel">
     <table id="table" style="display:none">
-      <thead><tr><th>物品</th><th style="text-align:center">個数</th><th></th></tr></thead>
+      <thead><tr><th>物品</th><th style="text-align:right">個数</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     <div class="empty" id="empty">まだ読み取っていません。</div>
@@ -614,17 +609,12 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
     $("copyBtn").disabled = !list.length;
     $("clearBtn").disabled = !list.length;
     $("tbody").innerHTML = list.map((it, i) => `
-      <tr class="${it.jan === flashJan ? "flash" : ""}">
+      <tr class="${it.jan === flashJan ? "flash" : ""}" data-i="${i}">
         <td>
           <div class="nm ${it.name ? "" : "none"}" data-name="${i}">${esc(it.name || "未登録（押して名前を入れる）")}</div>
           <div class="jan">${esc(it.jan)}</div>
         </td>
-        <td class="qty">
-          <button class="qbtn" type="button" data-minus="${i}">−</button>
-          <span class="qnum" data-qty="${i}">${it.qty}</span>
-          <button class="qbtn" type="button" data-plus="${i}">＋</button>
-        </td>
-        <td class="del"><button class="del-btn" type="button" data-i="${i}">×</button></td>
+        <td class="qty"><span class="qnum">${it.qty}</span></td>
       </tr>`).join("");
     // 光らせたぶんは、少し経ったら元の色へ戻す
     if (flashJan) setTimeout(() => {
@@ -763,35 +753,35 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
   // ---- ボタン ----
   $("startBtn").addEventListener("click", startCamera);
   $("stopBtn").addEventListener("click", () => { stopCamera(); setStatus("カメラを閉じました。"); });
-  // 一覧の中の操作 (個数の増減・直接入力・名前入れ・削除)
+  // 一覧の中の操作 (2026-08-26)
+  //   行の右半分を押す → 個数を1つ増やす
+  //   行の左半分を押す → 個数を1つ減らす (0になったら行ごと消える)
+  //   未登録の名前を押す → 名前を入れる (そこだけ個数は動かない)
+  // 一覧をスクロールしただけでは click は起きないので、指が触れて数が変わることはない。
   $("tbody").addEventListener("click", (e) => {
-    const el = e.target.closest("[data-minus],[data-plus],[data-qty],[data-name],[data-i]");
-    if (!el) return;
-    const d = el.dataset;
+    const tr = e.target.closest("tr[data-i]");
+    if (!tr) return;
+    const i = Number(tr.dataset.i);
+    if (!list[i]) return;
 
-    if (d.plus !== undefined) { list[d.plus].qty += 1; save(); render(); return; }
-    if (d.minus !== undefined) {
-      const i = Number(d.minus);
-      list[i].qty -= 1;
-      if (list[i].qty < 1) list.splice(i, 1);   // 0まで減らしたら行ごと消える
-      save(); render(); return;
-    }
-    if (d.qty !== undefined) {
-      const i = Number(d.qty);
-      const v = prompt("個数を入れてください", String(list[i].qty));
-      if (v === null) return;
-      const n = parseInt(String(v).replace(/[^\d]/g, ""), 10);
-      if (Number.isFinite(n) && n > 0) { list[i].qty = n; save(); render(); }
-      return;
-    }
-    if (d.name !== undefined) {
-      const i = Number(d.name);
+    // 「未登録（押して名前を入れる）」の文字の上だけは、これまでどおり名前入力
+    if (e.target.closest(".nm.none")) {
       const v = prompt("物品名を入れてください", list[i].name || "");
       if (v === null) return;
       list[i].name = String(v).trim();
-      save(); render(); return;
+      save(); render();
+      return;
     }
-    if (d.i !== undefined) { list.splice(Number(d.i), 1); save(); render(); }
+
+    const rect = tr.getBoundingClientRect();
+    const right = (e.clientX - rect.left) > rect.width / 2;
+    if (right) {
+      list[i].qty += 1;
+    } else {
+      list[i].qty -= 1;
+      if (list[i].qty < 1) list.splice(i, 1);   // 0まで減らしたら行ごと消える
+    }
+    save(); render();
   });
   $("copyBtn").addEventListener("click", async () => {
     // 表に貼れるよう、JAN / 物品名 / 個数 をタブ区切りで
