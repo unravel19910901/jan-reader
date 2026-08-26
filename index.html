@@ -113,7 +113,8 @@ td.qty { width: 64px; text-align: right; white-space: nowrap; }
   vertical-align: middle; padding: 0 2px;
 }
 /* 読み込んだ直後の行を一瞬光らせる (同じ物を読み足したときに分かるように) */
-tbody tr { cursor: pointer; }
+/* 長押しで文字が選ばれたり、長押しメニューが出たりしないようにする */
+tbody tr { cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 .empty { color: #999; font-size: 14px; padding: 14px 2px; }
 .row-actions { display: flex; gap: 8px; margin-top: 10px; }
@@ -755,10 +756,42 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
   $("stopBtn").addEventListener("click", () => { stopCamera(); setStatus("カメラを閉じました。"); });
   // 一覧の中の操作 (2026-08-26)
   //   行の右半分を押す → 個数を1つ増やす
-  //   行の左半分を押す → 個数を1つ減らす (0になったら行ごと消える)
+  //   行の左半分を押す → 個数を1つ減らす (1より下には行かない)
+  //   行を長押し       → 「削除しますか？」と訊いてから消す
   //   未登録の名前を押す → 名前を入れる (そこだけ個数は動かない)
   // 一覧をスクロールしただけでは click は起きないので、指が触れて数が変わることはない。
+  const LONG_PRESS_MS = 600;
+  let pressTimer = null, pressX = 0, pressY = 0, longFired = false;
+  const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+
+  $("tbody").addEventListener("pointerdown", (e) => {
+    const tr = e.target.closest("tr[data-i]");
+    if (!tr) return;
+    const i = Number(tr.dataset.i);
+    longFired = false;
+    pressX = e.clientX; pressY = e.clientY;
+    cancelPress();
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      longFired = true;                     // このあとの click は個数を動かさない
+      const it = list[i];
+      if (!it) return;
+      if (confirm(`「${it.name || it.jan}」を削除しますか？`)) {
+        list.splice(i, 1);
+        save(); render();
+      }
+    }, LONG_PRESS_MS);
+  });
+  // 指が動いた = スクロールなので、長押しとは見なさない
+  $("tbody").addEventListener("pointermove", (e) => {
+    if (!pressTimer) return;
+    if (Math.abs(e.clientX - pressX) > 10 || Math.abs(e.clientY - pressY) > 10) cancelPress();
+  });
+  $("tbody").addEventListener("pointerup", cancelPress);
+  $("tbody").addEventListener("pointercancel", cancelPress);
+
   $("tbody").addEventListener("click", (e) => {
+    if (longFired) { longFired = false; return; }   // 長押しで消したぶんは無視
     const tr = e.target.closest("tr[data-i]");
     if (!tr) return;
     const i = Number(tr.dataset.i);
@@ -775,12 +808,8 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 
     const rect = tr.getBoundingClientRect();
     const right = (e.clientX - rect.left) > rect.width / 2;
-    if (right) {
-      list[i].qty += 1;
-    } else {
-      list[i].qty -= 1;
-      if (list[i].qty < 1) list.splice(i, 1);   // 0まで減らしたら行ごと消える
-    }
+    if (right) list[i].qty += 1;
+    else if (list[i].qty > 1) list[i].qty -= 1;   // 1より下には行かない (消すのは長押し)
     save(); render();
   });
   $("copyBtn").addEventListener("click", async () => {
