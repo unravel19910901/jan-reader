@@ -62,6 +62,8 @@ body {
 .big-btn:disabled { opacity: 0.5; }
 .big-btn.stop { background: #7a7a7a; }
 .big-btn.sub { background: #fff; color: var(--bar); border: 2px solid var(--bar); }
+/* 棚札モードが入っているときは、押されている見た目にする */
+.big-btn.sub.on { background: var(--bar); color: #fff; }
 
 .status { font-size: 15px; line-height: 1.5; margin: 4px 2px 10px; color: #444; }
 .status.error { color: var(--ng); font-weight: 700; }
@@ -143,6 +145,7 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
     <div class="status" id="status">「カメラを開く」を押して、バーコードにかざしてください。</div>
     <button class="big-btn" id="startBtn" type="button">カメラを開く</button>
     <button class="big-btn stop" id="stopBtn" type="button" style="display:none">カメラを閉じる</button>
+    <button class="big-btn sub" id="cardBtn" type="button">棚札の数字も読む：オフ</button>
   </div>
 
   <div class="panel">
@@ -162,7 +165,8 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
       読み取りはこの端末の中だけで行われ、どこにも送信されません。<br />
       一覧はこの端末に残るので、画面を閉じても消えません。<br />
       同じ物品をもう一度読むと、個数が1つ増えます。個数は「−」「＋」か、数字を押して直接入れられます。<br />
-      バーコードのほか、<b>棚札に印字された13桁の数字</b>も読めます（少しじっと構えてください）。
+      棚札（バーコードの無いカード）を読むときは <b>「棚札の数字も読む」をオン</b> にしてください。<br />
+      初回だけ部品の読み込みに少し時間がかかります。2回目からは待ち時間はありません。
     </div>
   </div>
 
@@ -170,6 +174,7 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 
 
 <script src="vendor/zxing.min.js"></script>
+<script src="vendor/tesseract/tesseract.min.js"></script>
 <script>
   // ================================================================
   // 読み取りの仕組みは2通り。端末によって使える方が自動で選ばれる。
@@ -673,15 +678,15 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
 
   // ---- 棚札の数字読み (2026-08-26) ----
   // バーコードが無い棚札のために、印字された13桁の数字も読む。
-  // 端末に入っている文字読み(TextDetector)を使うので、追加のダウンロードは無い。
+  // 端末まかせ(TextDetector)では動かない機種があったので、文字読みの部品を
+  // このページ自体が積んでいる (vendor/tesseract)。初回だけ7MBほど読み込み、
+  // 2回目からは端末に残るので待ち時間は無い。
   // 読み間違いは JAN の見張り番(チェックディジット)で弾く。合わないものは捨てる。
-  let textDetector = null;   // null=未確認 / false=この端末では使えない
-  function ensureTextDetector() {
-    if (textDetector !== null) return textDetector;
-    if (!("TextDetector" in window)) { textDetector = false; return false; }
-    try { textDetector = new TextDetector(); } catch (_) { textDetector = false; }
-    return textDetector;
-  }
+  const CARD_KEY = "janReaderCardMode";
+  let ocrWorker = null, ocrLoading = false, ocrBusy = false;
+  let cardMode = false;
+  try { cardMode = localStorage.getItem(CARD_KEY) === "1"; } catch (_) {}
+
   // JANの13桁目は、前の12桁から計算で決まる見張り番。合わなければ読み間違い。
   function janCheckOk(code) {
     if (!/^\d{13}$/.test(code)) return false;
@@ -689,20 +694,74 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
     for (let i = 0; i < 12; i++) sum += Number(code[i]) * (i % 2 === 0 ? 1 : 3);
     return (10 - (sum % 10)) % 10 === Number(code[12]);
   }
-  async function scanText() {
-    const d = ensureTextDetector();
-    if (!d || video.readyState < 2) return;
-    let blocks;
-    try { blocks = await d.detect(video); } catch (_) { return; }
-    // 読めた文字から数字だけ取り出し、13桁の並びを片端から確かめる。
-    // 「0520201 トランスポア…」のような別の番号は、見張り番が合わないので落ちる。
-    const digits = (blocks || []).map((b) => String(b.rawValue || "")).join(" ").replace(/[^\d]/g, " ");
-    for (const run of digits.split(/\s+/)) {
+  // 読めた文字の中から、見張り番の合う13桁を探す。
+  // 棚札には商品コードや「残 1」など別の数字も並ぶが、計算が合わないので落ちる。
+  function findJan(text) {
+    for (const run of String(text || "").replace(/[^\d]/g, " ").split(/\s+/)) {
       for (let i = 0; i + 13 <= run.length; i++) {
         const cand = run.slice(i, i + 13);
-        if (janCheckOk(cand)) { hit(cand); return; }
+        if (janCheckOk(cand)) return cand;
       }
     }
+    return "";
+  }
+
+  async function ensureOcr() {
+    if (ocrWorker) return ocrWorker;
+    if (ocrLoading) return null;
+    ocrLoading = true;
+    setStatus("棚札を読む部品を用意しています…（初回だけ少し時間がかかります）");
+    try {
+      const w = await Tesseract.createWorker("eng", 1, {
+        workerPath: "vendor/tesseract/worker.min.js",
+        corePath: "vendor/tesseract/tesseract-core-simd.wasm.js",
+        langPath: "vendor/tesseract",
+        gzip: true,
+      });
+      // 数字だけを読ませる。文字の候補が減るぶん、速くも正確にもなる。
+      await w.setParameters({ tessedit_char_whitelist: "0123456789", tessedit_pageseg_mode: "6" });
+      ocrWorker = w;
+      setStatus("棚札の数字も読めるようになりました。枠に数字を入れてください。");
+      return w;
+    } catch (e) {
+      setStatus(`棚札を読む部品を用意できませんでした（${(e && e.message) || e}）。`, true);
+      return null;
+    } finally {
+      ocrLoading = false;
+    }
+  }
+
+  // 枠の中だけを切り出して読ませる。画面全部を読むより速く、まわりの文字も拾わない。
+  async function scanText() {
+    if (!cardMode || ocrBusy || video.readyState < 2) return;
+    const w = ocrWorker || await ensureOcr();
+    if (!w) return;
+    ocrBusy = true;
+    try {
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) return;
+      const sx = Math.round(vw * 0.08), sw = Math.round(vw * 0.84);
+      const sy = Math.round(vh * 0.39), sh = Math.round(vh * 0.22);
+      const cv = document.createElement("canvas");
+      cv.width = sw * 2; cv.height = sh * 2;   // 倍に伸ばすと小さい数字が読みやすくなる
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+      const r = await w.recognize(cv);
+      const jan = findJan(r && r.data && r.data.text);
+      if (jan) hit(jan);
+    } catch (_) { /* 1回読めなくても、次で拾う */ }
+    finally { ocrBusy = false; }
+  }
+
+  function setCardMode(on) {
+    cardMode = !!on;
+    try { localStorage.setItem(CARD_KEY, cardMode ? "1" : "0"); } catch (_) {}
+    const b = $("cardBtn");
+    if (b) {
+      b.textContent = cardMode ? "棚札の数字も読む：オン" : "棚札の数字も読む：オフ";
+      b.classList.toggle("on", cardMode);
+    }
+    if (cardMode) ensureOcr();
   }
 
   // ---- 読み取り部品の用意 ----
@@ -748,10 +807,9 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
       } catch (_) {
         stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       }
-      const cardOk = !!ensureTextDetector();
-      setStatus(cardOk
-        ? "バーコード、または棚札の13桁の数字を枠に入れてください。読めたら音が鳴ります。"
-        : "バーコードを枠に入れてください。読めたら音が鳴ります。（この端末では棚札の数字読みは使えません）");
+      setStatus(cardMode
+        ? "バーコード、または棚札の13桁の数字を枠に入れてください。"
+        : "バーコードを枠に入れてください。読めたら音が鳴ります。");
 
       if (ensureDetector()) {
         video.srcObject = stream;
@@ -765,7 +823,7 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
         reader.decodeFromStream(stream, video, (result) => { if (result) hit(result.getText()); });
       }
       // 棚札の数字読みは重いので、バーコードより間隔を空けて回す
-      if (cardOk) { textTimer = setInterval(scanText, 800); }
+      textTimer = setInterval(scanText, 1200);
     } catch (e) {
       stopCamera();
       const name = String((e && e.name) || e);
@@ -866,6 +924,9 @@ tr.flash td { background: #eaf3d8; transition: background 0.9s; }
       || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia;
     if (inApp) $("inapp").style.display = "";
   })();
+
+  document.getElementById("cardBtn").addEventListener("click", () => setCardMode(!cardMode));
+  setCardMode(cardMode);
 
   render();
 </script>
