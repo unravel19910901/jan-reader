@@ -19,11 +19,11 @@ body {
   display: flex; flex-direction: column;
 }
 /* 背景の絵。動かない一枚絵として後ろに置く (スクロールしても揺れない)。
-   濃さは opacity の数字だけで変えられる (0.15 = 15%)。 */
+   濃さは opacity の数字だけで変えられる (0.4 = 40%)。 */
 body::before {
   content: ""; position: fixed; inset: 0; z-index: -1;
   background: url("assets/bg.jpg") center / cover no-repeat;
-  opacity: 0.15;
+  opacity: 0.4;
   pointer-events: none;
 }
 :root {
@@ -44,7 +44,7 @@ body::before {
 /* ---- 本体 ---- */
 .wrap { flex: 1 1 auto; overflow-y: auto; padding: 12px; }
 .panel {
-  background: rgba(255,255,255,0.88); border-radius: 12px; padding: 14px;
+  background: rgba(255,255,255,0.82); border-radius: 12px; padding: 14px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.12); margin-bottom: 12px;
 }
 
