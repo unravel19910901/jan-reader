@@ -128,8 +128,6 @@ td.del { width: 46px; text-align: right; }
     <div class="status" id="status">「カメラを開く」を押して、バーコードにかざしてください。</div>
     <button class="big-btn" id="startBtn" type="button">カメラを開く</button>
     <button class="big-btn stop" id="stopBtn" type="button" style="display:none">カメラを閉じる</button>
-    <label class="big-btn sub" for="photo" style="display:block; text-align:center;">写真から読む</label>
-    <input type="file" id="photo" accept="image/*" capture="environment" style="display:none" />
   </div>
 
   <div class="panel">
@@ -153,7 +151,6 @@ td.del { width: 46px; text-align: right; }
 
 </div>
 
-<canvas id="canvas" style="display:none"></canvas>
 
 <script src="vendor/zxing.min.js"></script>
 <script>
@@ -164,7 +161,7 @@ td.del { width: 46px; text-align: right; }
   // どちらも端末の中で完結する。
   // ================================================================
   const $ = (id) => document.getElementById(id);
-  const cameraBox = $("cameraBox"), video = $("video"), canvas = $("canvas");
+  const cameraBox = $("cameraBox"), video = $("video");
   const STORE_KEY = "janReaderList";
 
   let detector = null;
@@ -337,7 +334,7 @@ td.del { width: 46px; text-align: right; }
       } else if (name.includes("NotFound") || name.includes("NotReadable")) {
         setStatus(`カメラを使えませんでした（${name}）。他のアプリがカメラを使っていないかご確認ください。`, true);
       } else {
-        setStatus(`カメラを開けませんでした（${name}）。「写真から読む」でも読み取れます。`, true);
+        setStatus(`カメラを開けませんでした（${name}）。`, true);
       }
     }
   }
@@ -362,47 +359,10 @@ td.del { width: 46px; text-align: right; }
     } catch (_) { /* 1コマ読めなくても、次のコマで拾う */ }
   }
 
-  // ---- 写真から読む ----
-  async function readPhoto(file) {
-    if (!file) return;
-    setStatus("写真を読み取っています...");
-    const url = URL.createObjectURL(file);
-    try {
-      const img = await loadImage(url);
-      if (ensureDetector()) {
-        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-        canvas.getContext("2d").drawImage(img, 0, 0);
-        const codes = await detector.detect(canvas);
-        if (codes && codes[0] && codes[0].rawValue) { hit(codes[0].rawValue); return; }
-      } else {
-        const reader = ensureZxing();
-        if (reader) {
-          try {
-            const result = await reader.decodeFromImageUrl(url);
-            if (result) { hit(result.getText()); return; }
-          } catch (_) { /* 下の案内へ */ }
-        }
-      }
-      setStatus("写真からバーコードを見つけられませんでした。もう少し近くで、まっすぐ撮ってください。", true);
-    } catch (e) {
-      setStatus(`写真の読み取りに失敗しました: ${(e && e.message) || e}`, true);
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  }
-  function loadImage(url) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error("画像を開けませんでした"));
-      img.src = url;
-    });
-  }
 
   // ---- ボタン ----
   $("startBtn").addEventListener("click", startCamera);
   $("stopBtn").addEventListener("click", () => { stopCamera(); setStatus("カメラを閉じました。"); });
-  $("photo").addEventListener("change", (e) => { readPhoto(e.target.files && e.target.files[0]); e.target.value = ""; });
   $("tbody").addEventListener("click", (e) => {
     const b = e.target.closest(".del-btn");
     if (!b) return;
